@@ -2,6 +2,11 @@ import AnswerModel from "./answerModel";
 import JsendSerializer from '../../util/JsendSerializer';
 import httpErrorCodes from '../../util/httpErrorCodes';
 import questionModel from "../questions/questionModel";
+import Option from "../options/optionsModel";
+import scoreLogModel from "../scoreLogs/scoreLogModel";
+import Category from "../category/categoryModel";
+import QuestionBank from "../questionBank/questionbankModel";
+import answerHelper from "./answerHelper";
 
 class AnswerController {
     /**
@@ -28,27 +33,158 @@ class AnswerController {
         try {
             const {text} = req.body;
             const {questionId} = req.params;
+            const dt = new Date().toDateString();
 
             if (!questionId) {
-                return res.status(httpErrorCodes.BAD_REQUEST).json(JsendSerializer.fail('No question selected!', null, 400));
+                return res.status(httpErrorCodes.OK).json(JsendSerializer.fail('No question selected!', null, 400));
             }
+
+            const findAnswer = await AnswerModel.Answer.findOne({question: questionId, created: dt, owner: req.owner});
+
+            if(findAnswer){
+                return res.status(httpErrorCodes.OK).json(JsendSerializer.fail('Question has been answered already!', null, 400));
+            }
+
+            let specialQuestion = {};
 
             const question = await questionModel.Question.findById(questionId);
 
             if (!question) {
-                return res.status(httpErrorCodes.NOT_FOUND).json(JsendSerializer.fail('Question not found!', null, 404));
+                specialQuestion = await QuestionBank.findById(questionId);
             }
 
-            const Answer = new AnswerModel.Answer();
+            if(!specialQuestion)
+                return res.status(httpErrorCodes.OK).json(JsendSerializer.fail('Question not found!', null, 404));
+
+            let score = 0;
+            let category = "";
+
+            let Answer = new AnswerModel.Answer();
             Answer.question = questionId;
-            Answer.text = text;
+            let option = {};
+            if(question){
+                option = await Option.findOne({option:text});
+                score = option.score;
+                Answer.text = option._id;
+                category = question.category;
+            }else if(specialQuestion){
+                if(specialQuestion.answer === text){
+                    Answer.text = "5cdff1bca367b31144980d90";
+                    score = specialQuestion.mark;
+                    category = specialQuestion.category;
+                }else{
+                    Answer.text = "5cdff1cda367b31144980d91";
+                    score = 0;
+                    category = specialQuestion.category;
+                }
+            }
             Answer.owner = req.owner;
 
             await Answer.save();
-            return res.status(httpErrorCodes.OK).json(JsendSerializer.success('Answer created!', Answer, 201));
+
+            Answer = {
+                text,
+                created: Answer.created,
+                _id: Answer._id,
+                question: Answer.question,
+                owner: Answer.owner,
+                __v: Answer.__v
+            };
+
+            let categoryData = {};
+            let totalScore = 0;
+             
+            let scoreLog = await scoreLogModel.ScoreLog.findOne({category, created: dt, owner: req.owner});
+            
+            let categoryScore = 0;
+            if(question){
+                const numberOfOptions = question.options.length;
+                let scoreOfhighestOption = 0;
+                for (let i = 0; i < numberOfOptions; i++) {
+                    const eachoption = question.options[i];  
+                    const getOption = await Option.findById(eachoption);
+                    const scoreOfOption = getOption.score;
+
+                    if (scoreOfOption > scoreOfhighestOption) {
+                        scoreOfhighestOption = scoreOfOption;
+                    }
+                }
+
+                
+                if (scoreLog) {
+                    scoreLog.answers.push(Answer._id);
+                    let currentScore = scoreLog.score
+                    if (isNaN(currentScore)) {
+                        currentScore = 0;
+                    }
+                    scoreLog.score = score + currentScore;
+
+                    await scoreLog.save();
+                    const numberOfAnswers = scoreLog.answers.length;
+                    categoryScore = scoreLog.score;
+                    totalScore = scoreOfhighestOption * numberOfAnswers;
+                }else{
+                    const newScoreLog = new scoreLogModel.ScoreLog();
+                    newScoreLog.owner = req.owner;
+                    newScoreLog.category = category;
+                    newScoreLog.answers = [Answer._id];
+                    newScoreLog.score = score;
+
+                    await newScoreLog.save();
+                    categoryScore = newScoreLog.score;
+                    totalScore = scoreOfhighestOption;
+                }
+            }else if(specialQuestion){
+                if (scoreLog) {
+                    scoreLog.answers.push(Answer._id);
+                    let currentScore = scoreLog.score;
+                    scoreLog.category = category;
+                    if (isNaN(currentScore)) {
+                        currentScore = 0;
+                    }
+                    scoreLog.score = score + currentScore;
+
+                    await scoreLog.save();
+                    const numberOfAnswers = scoreLog.answers.length;
+                    categoryScore = scoreLog.score;
+                    totalScore = numberOfAnswers;
+                }else{
+                    const newScoreLog = new scoreLogModel.ScoreLog();
+                    newScoreLog.owner = req.owner;
+                    newScoreLog.category = category;
+                    newScoreLog.answers = [Answer._id];
+                    newScoreLog.score = score;
+
+                    await newScoreLog.save();
+                    categoryScore = newScoreLog.score;
+                    totalScore = 1;
+                }
+            }
+            
+            const findCategory = await Category.findById(category);
+            categoryData['name'] = findCategory.category;
+            categoryData['score'] = categoryScore;
+            categoryData['total'] = totalScore;
+            
+            await answerHelper.categoryRating(req.owner, category, dt, categoryScore, totalScore)
+            
+            return res.status(httpErrorCodes.OK).json({
+                Answer,
+                categoryData,
+                message: "Answer created!",
+                status: "success",
+                code: 201
+            });
         } catch (err) {
+            console.log(err)
             return res.status(httpErrorCodes.INTERNAL_SERVER_ERROR).json(JsendSerializer.fail('An internal Server error has occured!', err, 500));
         }
+    }
+
+    async allAnswers(req, res) {
+        const all = await QuestionModel.Question.find({owner: req.owner });
+
+        return res.status(httpErrorCodes.OK).json(JsendSerializer.success('Questions are:', all, 201));
     }
 }
 export default new AnswerController();

@@ -15,8 +15,9 @@ const AnswerSchema = new Schema({
         required: true
     },
     text: {
-        type: String,
-        required: true
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Option',
+        default: "5cdff1bca367b31144980d90"
     },
     created: { type: String, default: createTime }
 });
